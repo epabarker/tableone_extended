@@ -122,3 +122,63 @@ def fix_table_join_operations():
     except Exception as e:
         print(f"[ERROR] Failed to apply robust join patch: {str(e)}")
         return False
+
+from tableone.tables import _join_r
+
+def fix_table_join_operations():
+    """Monkey patch TableOne's join operations to be more robust."""
+    from tableone import tables
+    original_join_r = tables._join_r
+    
+    def robust_join_r(*args, **kwargs):
+        try:
+            # Try the original join operation first
+            return original_join_r(*args, **kwargs)
+        except Exception as e:
+            # If it fails, try an alternative approach with merge on index
+            try:
+                left = args[0]
+                right = args[1]
+                result = pd.merge(left, right, left_index=True, right_index=True, how='outer')
+                return result
+            except Exception as fallback_e:
+                # If both approaches fail, raise the original error
+                raise e
+    
+    # Replace the original join operation with our robust version
+    tables._join_r = robust_join_r
+    return True
+
+def ensure_numeric_order_comorbidity_count(df):
+    """
+    Ensures that comorbidity_count column is properly ordered as numbers.
+    Call this function before passing data to TableOne.
+    """
+    if 'comorbidity_count' not in df.columns:
+        return df
+    
+    # Make a copy to avoid modifying the original
+    df = df.copy()
+    
+    # Convert to numeric and properly order
+    try:
+        # First, extract current values and convert to numeric
+        values = pd.to_numeric(df['comorbidity_count'], errors='coerce')
+        
+        # Create properly ordered categories
+        unique_vals = sorted(values.dropna().unique().tolist())
+        
+        # Enforce numeric categorization
+        df['comorbidity_count'] = pd.Categorical(
+            values, 
+            categories=unique_vals,
+            ordered=True
+        )
+        
+        # Ensure DataFrame remembers this column is categorical with numeric order
+        df['comorbidity_count'] = df['comorbidity_count'].astype('category')
+    except Exception:
+        # If anything goes wrong, leave the column as is
+        pass
+        
+    return df

@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from tableone.exceptions import InputError
+from .exceptions import InputError
 
 
 def ensure_list(arg, arg_name):

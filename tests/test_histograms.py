@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
 
-from tableone import TableOne
-from tableone.formatting import generate_histograms
+from tableone_extended.tableone import TableOne
+from tableone_extended.tableone.formatting import generate_histograms
 
 
 def test_generate_histograms_simple():

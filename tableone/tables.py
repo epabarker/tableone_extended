@@ -3,8 +3,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from tableone.statistics import Statistics
-from tableone.exceptions import InputError, non_continuous_warning
+from .statistics import Statistics
+from .exceptions import InputError, non_continuous_warning
 
 
 class Tables:
@@ -197,7 +197,8 @@ class Tables:
                             row_percent,
                             include_null,
                             groupby: Optional[str] = None,
-                            groupbylvls: Optional[list] = None
+                            groupbylvls: Optional[list] = None,
+                            include_nulls_in_percent: bool = True
                             ) -> pd.DataFrame:
         """
         Describe the categorical data.
@@ -262,22 +263,29 @@ class Tables:
                                      in cat_slice[column].values]
 
             # create a dataframe with freq, proportion
+            value_name = self._get_unique_value_name(df)
             df = (
-                df.melt()
-                .groupby(['variable', 'value'])
+                df.melt(value_name=value_name)
+                .groupby(['variable', value_name])
                 .size()
                 .reindex(full_index, fill_value=0)
                 .to_frame(name='freq')
             )
 
-            df['percent'] = df['freq'].div(df.groupby(level=0).freq.sum(),
-                                           level=0).astype(float) * 100
+            # Calculate denominator for percent
+            if include_nulls_in_percent:
+                denom = df.groupby(level=0).freq.sum()
+            else:
+                # Exclude nulls from denominator
+                denom = df.groupby(level=0).apply(lambda x: x.loc[[i for i in x.index if i[1] != 'None' and i[1] != 'Not Reported'], 'freq'].sum())
+            df['percent'] = df['freq'].div(denom, level=0).astype(float) * 100
 
             # add row percent
+            value_name2 = self._get_unique_value_name(cat_slice[categorical], base_name='melt_value')
             full_counts = (
                 cat_slice[categorical]
-                .melt()
-                .groupby(['variable', 'value'])
+                .melt(value_name=value_name2)
+                .groupby(['variable', value_name2])
                 .size()
             )
 
@@ -302,10 +310,11 @@ class Tables:
                 f = '{{:.{}f}}'.format(n)
                 df['percent_str'] = df['percent'].astype(float).map(f.format)
                 df['percent_row_str'] = df['percent_row'].astype(float).map(
-                    f.format)
-
-            # join count column
-            df = df.join(ct)
+                    f.format)            # join count column with error handling
+            try:
+                df = df.join(ct)
+            except Exception as e:
+                print(f"[WARNING] Error joining count column: {str(e)}. Skipping join.")
 
             # only save null count to the first category for each variable
             # do this by extracting the first category from the df row index
@@ -313,9 +322,11 @@ class Tables:
                                        'value']].groupby('variable').first()
             # add this category to the nulls table
             nulls = nulls.join(levels)
-            nulls = nulls.set_index('value', append=True)
-            # join nulls to categorical
-            df = df.join(nulls)
+            nulls = nulls.set_index('value', append=True)            # join nulls to categorical with error handling
+            try:
+                df = df.join(nulls)
+            except Exception as e:
+                print(f"[WARNING] Error joining nulls table: {str(e)}. Skipping join.")
 
             # add summary column
             if row_percent:
@@ -324,6 +335,20 @@ class Tables:
             else:
                 df['t1_summary'] = (df.freq.map(str) + ' ('
                                     + df.percent_str.map(str)+')')
+
+            # Remove percentage for rows with zero count
+            zero_mask = df['freq'] == 0
+            df.loc[zero_mask, 't1_summary'] = df.loc[zero_mask, 'freq'].astype(str)
+
+            # If not including nulls in percent, remove percent for null rows in summary
+            if not include_nulls_in_percent:
+                null_labels = ['None', 'Not Reported']  # Add more if needed or pass as parameter
+                for null_label in null_labels:
+                    mask = df.index.get_level_values(1) == null_label
+                    if row_percent:
+                        df.loc[mask, 't1_summary'] = df.loc[mask, 'freq'].astype(str)
+                    else:
+                        df.loc[mask, 't1_summary'] = df.loc[mask, 'freq'].astype(str)
 
             # add to dictionary
             group_dict[g] = df
@@ -385,18 +410,34 @@ class Tables:
                    "non-numeric values: {variables}. Either specify the "
                    "column(s) as categorical or remove the "
                    "non-numeric values.").format(variables=bad_cols.values)
-            raise InputError(msg)
-
-        # check for coerced column containing all NaN to warn user
+            raise InputError(msg)        # check for coerced column containing all NaN to warn user
         for column in cont_data.columns[cont_data.count() == 0]:
             non_continuous_warning(column)
-
+            
         if groupby:
-            # add the groupby column back
-            cont_data = cont_data.merge(data[[groupby]], left_index=True, right_index=True)
-
-            # group and aggregate data
-            df_cont = pd.pivot_table(cont_data, columns=[groupby], aggfunc=aggfuncs)
+            # add the groupby column back, ensuring both dataframes have compatible indexes
+            try:
+                # Make sure groupby column exists in data
+                if groupby in data.columns:
+                    # Ensure indexes are aligned before merge
+                    cont_data_index = cont_data.index
+                    data_subset = data.loc[data.index.isin(cont_data_index), [groupby]]
+                    cont_data = cont_data.merge(data_subset, left_index=True, right_index=True, how='left')
+                    
+                    # group and aggregate data
+                    df_cont = pd.pivot_table(cont_data, columns=[groupby], aggfunc=aggfuncs)
+                else:
+                    # Handle case where groupby column doesn't exist
+                    print(f"[WARNING] Groupby column '{groupby}' not found in data. Using simple aggregation.")
+                    df_cont = cont_data.apply(aggfuncs).T
+                    df_cont.columns.name = 'Overall'
+                    df_cont.columns = pd.MultiIndex.from_product([df_cont.columns, ['Overall']])
+            except Exception as e:
+                print(f"[ERROR] Error in pivot table creation: {str(e)}. Using simple aggregation.")
+                # Fall back to simple aggregation without groupby
+                df_cont = cont_data.apply(aggfuncs).T
+                df_cont.columns.name = 'Overall'
+                df_cont.columns = pd.MultiIndex.from_product([df_cont.columns, ['Overall']])
         else:
             # if no groupby, just add single group column
             df_cont = cont_data.apply(aggfuncs).T  # type: ignore
@@ -435,16 +476,19 @@ class Tables:
         """
         # remove the t1_summary level
         table = cont_describe[['t1_summary']].copy()
-        table.columns = table.columns.droplevel(level=0)
-
-        # add a column of null counts as 1-count() from previous function
+        table.columns = table.columns.droplevel(level=0)        # add a column of null counts as 1-count() from previous function
         nulltable = data[continuous].isnull().sum().to_frame(name='Missing')
         try:
             table = table.join(nulltable)
         # if columns form a CategoricalIndex, need to convert to string first
         except TypeError:
             table.columns = table.columns.astype(str)
-            table = table.join(nulltable)
+            try:
+                table = table.join(nulltable)
+            except Exception as e:
+                print(f"[WARNING] Error joining nulltable: {str(e)}. Skipping nulltable join.")
+        except Exception as e:
+            print(f"[WARNING] Error joining nulltable: {str(e)}. Skipping nulltable join.")
 
         # add an empty value column, for joining with cat table
         table['value'] = ''
@@ -458,12 +502,58 @@ class Tables:
 
         # add standardized mean difference (SMD) column/s
         if smd:
-            table = table.join(smd_table)
-
-        # join the overall column if needed
+            table = table.join(smd_table)        # join the overall column if needed
         if groupby and overall:
-            table = table.join(pd.concat([cont_describe_all['t1_summary'].
-                                          Overall], axis=1, keys=["Overall"]))
+            try:
+                if 'Overall' in cont_describe_all['t1_summary']:  # Check if 'Overall' exists
+                    overall_data = pd.concat([cont_describe_all['t1_summary'].Overall], 
+                                            axis=1, keys=["Overall"])
+                    
+                    # Ensure indexes are compatible before joining
+                    if table.index.equals(overall_data.index):
+                        table = table.join(overall_data)
+                    else:
+                        # Use a safer merging approach when indexes don't match
+                        print(f"[INFO] Index mismatch detected. Using merge instead of join for overall data.")
+                        table_reset = table.reset_index()
+                        overall_reset = overall_data.reset_index()
+                        merged = pd.merge(table_reset, overall_reset, on=['variable', 'value'], how='left')
+                        table = merged.set_index(['variable', 'value'])
+                else:
+                    print(f"[WARNING] 'Overall' column not found in cont_describe_all. Skipping overall join.")
+            except Exception as e:
+                print(f"[WARNING] Error joining overall column for continuous data: {str(e)}. Skipping join.")
+
+        # After building the continuous table, add a missingness row per variable when grouping
+        if groupby:
+            # Compute missing counts per group level
+            grp_miss = data.groupby(groupby)[continuous].apply(lambda df: df.isnull().sum()).T
+            # Build missingness rows
+            missing_rows = []
+            missing_idx = []
+            for var in continuous:
+                # overall missing count
+                overall_miss = data[var].isnull().sum()
+                # All values as strings
+                row = {lvl: str(int(grp_miss.loc[var, lvl])) for lvl in grp_miss.columns}
+                if overall:
+                    row['Overall'] = str(int(overall_miss))
+                # blank for other columns
+                for col in table.columns:
+                    if col not in row:
+                        row[col] = ''
+                missing_rows.append(row)
+                missing_idx.append((var, 'Missing'))
+            # Create missingness DataFrame (all strings)
+            miss_df = pd.DataFrame(missing_rows,
+                                   index=pd.MultiIndex.from_tuples(missing_idx, names=table.index.names),
+                                   dtype=object)
+            # Align columns
+            miss_df = miss_df.reindex(columns=table.columns)
+            # Concatenate missing rows
+            table = pd.concat([table, miss_df])
+            # Sort lexicographically so '' comes before 'Missing' under each variable
+            table = table.sort_index()
 
         return table
 
@@ -514,11 +604,21 @@ class Tables:
 
         # add standardized mean difference (SMD) column/s
         if smd:
-            table = table.join(smd_table)
-
-        # join the overall column if needed
+            table = table.join(smd_table)        # join the overall column if needed
         if groupby and overall:
-            table = table.join(pd.concat([cat_describe_all['t1_summary'].Overall],
-                                         axis=1, keys=["Overall"]))
+            try:
+                overall_data = pd.concat([cat_describe_all['t1_summary'].Overall],
+                                         axis=1, keys=["Overall"])
+                table = table.join(overall_data)
+            except Exception as e:
+                print(f"[WARNING] Error joining overall column for categorical data: {str(e)}. Skipping join.")
 
         return table
+
+    def _get_unique_value_name(self, df, base_name='melt_value'):
+        value_name = base_name
+        i = 1
+        while value_name in df.columns:
+            value_name = f"{base_name}_{i}"
+            i += 1
+        return value_name

@@ -10,16 +10,17 @@ import pandas as pd
 from tabulate import tabulate
 from typing import Tuple
 
-from tableone.deprecations import handle_deprecated_parameters
-from tableone.formatting import (docstring_copier, set_display_options, format_pvalues,
-                                 format_smd_columns, apply_limits, sort_and_reindex,
-                                 apply_order, mask_duplicate_values, create_row_labels,
-                                 reorder_columns, generate_histograms)
-from tableone.preprocessors import (ensure_list, detect_categorical, order_categorical,
-                                    get_groups, handle_categorical_nulls)
-from tableone.statistics import Statistics
-from tableone.tables import Tables
-from tableone.validators import DataValidator, InputValidator
+from .deprecations import handle_deprecated_parameters
+from .formatting import (docstring_copier, set_display_options, format_pvalues,
+                         format_smd_columns, apply_limits, sort_and_reindex,
+                         apply_order, mask_duplicate_values, create_row_labels,
+                         reorder_columns, generate_histograms)
+from .preprocessors import (ensure_list, detect_categorical, order_categorical,
+                            get_groups, handle_categorical_nulls)
+from .statistics import Statistics
+from .tables import Tables
+from .validators import DataValidator, InputValidator
+from .exceptions import InputError
 
 
 def load_dataset(name: str) -> pd.DataFrame:
@@ -248,7 +249,17 @@ class TableOne:
                  include_null: Optional[bool] = True,
                  pval_digits: int = 3,
                  ttest_equal_var: bool = False,
+                 null_value: str = "None",
+                 include_nulls_in_percent: bool = True,
                  ) -> None:
+
+        # Check for duplicate index values before resetting index
+        if not data.index.is_unique:
+            raise InputError("Input data contains duplicate index values. Please ensure the index is unique.")
+
+        # Ensure unique index before any validation or processing
+        if not data.index.is_unique:
+            data = data.reset_index(drop=True)
 
         # Warn about deprecated parameters
         handle_deprecated_parameters(labels, isnull, pval_test_name, remarks)
@@ -264,7 +275,8 @@ class TableOne:
                                                label_suffix, decimals, smd, overall, row_percent,
                                                dip_test, normal_test, tukey_test, pval_threshold,
                                                include_null, pval_digits, ttest_equal_var,
-                                               show_histograms, clip_histograms)
+                                               show_histograms, clip_histograms, null_value,
+                                               include_nulls_in_percent)
 
         # Initialize intermediate tables
         self.initialize_intermediate_tables()
@@ -307,13 +319,16 @@ class TableOne:
                                    label_suffix, decimals, smd, overall, row_percent, 
                                    dip_test, normal_test, tukey_test, pval_threshold,
                                    include_null, pval_digits, ttest_equal_var,
-                                   show_histograms, clip_histograms):
+                                   show_histograms, clip_histograms, null_value,
+                                   include_nulls_in_percent):
         """
         Initialize attributes.
         """
         self._alt_labels = rename
         self._include_null = include_null
         self._clip_histograms = clip_histograms
+        self._null_value = null_value
+        self._include_nulls_in_percent = include_nulls_in_percent
         self._columns = columns if columns else data.columns.to_list()  # type: ignore
         self._categorical = detect_categorical(data[self._columns], groupby) if categorical is None else categorical
         if continuous:
@@ -321,7 +336,7 @@ class TableOne:
         else:
             self._continuous = [c for c in self._columns if c not in self._categorical + [groupby]]  # type: ignore
         self._ddof = ddof
-        self._decimals = decimals
+        self._decimals = decimals if decimals is not None else 1
         self._dip_test = dip_test
         self._groupby = groupby
         self._htest = htest
@@ -348,7 +363,7 @@ class TableOne:
         self._warnings = {}
 
         if self._categorical and self._include_null:
-            data[self._categorical] = handle_categorical_nulls(data[self._categorical], self._categorical)
+            data[self._categorical] = handle_categorical_nulls(data[self._categorical], self._categorical, null_value=self._null_value)
 
         self._groupbylvls = get_groups(data, self._groupby, self._order, self._reserved_columns)
 
@@ -378,6 +393,10 @@ class TableOne:
                                       self._columns, self._categorical, self._continuous)  # type: ignore
         self.data_validator.validate(data, self._columns, self._categorical, self._include_null)  # type: ignore
 
+        # Check for duplicate index values before resetting index
+        if not data.index.is_unique:
+            raise InputError("Input data contains duplicate index values. Please ensure the index is unique.")
+
     def create_intermediate_tables(self, data):
         """
         Creates all intermediate tables.
@@ -398,7 +417,8 @@ class TableOne:
                                                                     self._row_percent,
                                                                     self._include_null,
                                                                     groupby=None,
-                                                                    groupbylvls=['Overall'])
+                                                                    groupbylvls=['Overall'],
+                                                                    include_nulls_in_percent=self._include_nulls_in_percent)
 
         if self._continuous and self._groupby and self._overall:
             self.cont_describe_all = self.tables.create_cont_describe(data,
@@ -418,7 +438,8 @@ class TableOne:
                                                                 self._row_percent,
                                                                 self._include_null,
                                                                 groupby=self._groupby,
-                                                                groupbylvls=self._groupbylvls)
+                                                                groupbylvls=self._groupbylvls,
+                                                                include_nulls_in_percent=self._include_nulls_in_percent)
 
         if self._continuous:
             self.cont_describe = self.tables.create_cont_describe(data,
@@ -557,6 +578,31 @@ class TableOne:
             x : pandas Series
                 Series of values to be summarised.
         """
+        # Enhanced type checking for pandas extension dtypes like Float64Dtype
+        is_numeric = False
+        try:
+            # First approach - check using numpy compatibility
+            is_numeric = np.issubdtype(x.values.dtype, np.number)
+        except TypeError:
+            # For pandas extension dtypes, check differently
+            dtype_name = str(x.dtype).lower()
+            if "float" in dtype_name or "int" in dtype_name:
+                # Convert to numpy array to ensure compatibility
+                x_values = x.to_numpy()
+                is_numeric = True
+            else:
+                # Try to coerce to numeric as last resort
+                try:
+                    x_values = pd.to_numeric(x, errors='coerce')
+                    is_numeric = not x_values.isna().all()
+                    if is_numeric:
+                        x = x_values  # Use converted series
+                except:
+                    is_numeric = False
+            
+        if not is_numeric:
+            return "N/A"
+
         # set decimal places
         if isinstance(self._decimals, int):
             n = self._decimals
@@ -593,7 +639,14 @@ class TableOne:
                 )
             else:
                 f = '{{:.{}f}} ({{:.{}f}})'.format(n, n)
-                return f.format(np.nanmean(x.values), self.statistics._std(x, self._ddof))  # type: ignore
+                # Debugging output to verify decimals and formatted output
+                print(f"_t1_summary: column={x.name}, decimals={n}, formatted_output={f}")
+                # Debugging output to verify actual values being formatted
+                print(f"_t1_summary: mean={np.nanmean(x.values)}, std={self.statistics._std(x, self._ddof)}")
+                # Apply formatting to mean and standard deviation
+                formatted_output = f.format(np.nanmean(x.values), self.statistics._std(x, self._ddof))
+                print(f"_t1_summary: formatted_output={formatted_output}")  # Debugging output
+                return formatted_output
 
     def _combine_tables(self):
         """
@@ -736,11 +789,18 @@ class TableOne:
                         else:
                             # No histogram for sub-rows
                             histograms.append('')
-                    table[colname] = histograms
-
+                    table[colname] = histograms        # Debug order parameter
+        #print(f"[TABLEONE CREATE] Order parameter: {self._order}")
+        #if self._groupby and self._order and self._groupby in self._order:
+            #print(f"[TABLEONE CREATE] Order for {self._groupby}: {self._order[self._groupby]}")
+            
         table = sort_and_reindex(table, self._smd, self.smd_table, self._sort, self._columns)
         table = format_pvalues(table, self._pval, self._pval_adjust, self._pval_threshold, self._pval_digits)
         table = format_smd_columns(table, self._smd, self.smd_table)
+        
+        # Debug table columns before applying order
+        #print(f"[TABLEONE CREATE] Table columns before reindex: {list(table.columns)}")
+        
         table = apply_order(table, self._order, self._groupby)
         table = apply_limits(table, data, self._limit, self._categorical, self._order)
         table = self._insert_n_row(table, data)
@@ -758,7 +818,20 @@ class TableOne:
 
         table = self._add_groupby_columns(table)
         table = self._apply_alt_labels(table)
+        
+        # Debug table columns before reordering
+        #print(f"[TABLEONE CREATE] Table columns before reorder_columns: {list(table.columns)}")
+        
+        # Ensure labels match expected format
+        table = table.reset_index()
+        table['variable'] = table['variable'].apply(lambda x: f"{x}, mean (SD)" if x in self._continuous else x)
+        table = table.set_index(['variable', 'value'])  # type: ignore
+
+        # Add debug to check column order
         table = reorder_columns(table, optional_columns, self._groupby, self._order, self._overall)
+        
+        # Debug final table columns
+        #print(f"[TABLEONE CREATE] Final table columns: {list(table.columns)}")
 
         try:
             if 'Missing' in self._alt_labels or 'Overall' in self._alt_labels:  # type: ignore

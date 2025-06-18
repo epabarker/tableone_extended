@@ -255,17 +255,26 @@ def create_row_labels(columns, alt_labels, label_suffix, nonnormal,
 
     # append the label suffix
     if label_suffix:
-        for k in list(labels.keys()):
+        for k in labels.keys():
             if k in nonnormal:
                 if min_max and k in min_max:
-                    labels[k] = f"{labels[k]}, median [min,max]"
+                    labels[k] = "{}, {}".format(labels[k],
+                                                "median [min,max]")
                 else:
-                    labels[k] = f"{labels[k]}, median [Q1,Q3]"
+                    labels[k] = "{}, {}".format(labels[k],
+                                                "median [Q1,Q3]")
             elif k in categorical:
-                labels[k] = f"{labels[k]}, n (%)"
+                labels[k] = "{}, {}".format(labels[k], "n (%)")
             else:
                 if min_max and k in min_max:
-                    labels[k] = f"{labels[k]}, mean (SD)"
+                    labels[k] = "{}, {}".format(labels[k],
+                                                "mean [min,max]")
+                else:
+                    labels[k] = "{}, {}".format(labels[k],
+                                                "mean (SD)")
+                
+                
+                
 
     # Ensure labels are consistent with expected test formats
     for k in labels.keys():

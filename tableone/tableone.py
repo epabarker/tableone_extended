@@ -813,8 +813,8 @@ class TableOne:
         if self._pval and not self._pval_test_name:
             table = table.drop('Test', axis=1)
 
-        # replace nans with empty strings
-        table = table.fillna('')
+        # replace nans with np.nan (do not use empty strings)
+        table = table.where(pd.notnull(table), np.nan)
 
         table = self._add_groupby_columns(table)
         table = self._apply_alt_labels(table)
@@ -823,9 +823,8 @@ class TableOne:
         #print(f"[TABLEONE CREATE] Table columns before reorder_columns: {list(table.columns)}")
         
         # Ensure labels match expected format
-        table = table.reset_index()
-        table['variable'] = table['variable'].apply(lambda x: f"{x}, mean (SD)" if x in self._continuous else x)
-        table = table.set_index(['variable', 'value'])  # type: ignore
+        #table = table.reset_index()
+        #table = table.set_index(['variable', 'value'])  # type: ignore
 
         # Add debug to check column order
         table = reorder_columns(table, optional_columns, self._groupby, self._order, self._overall)

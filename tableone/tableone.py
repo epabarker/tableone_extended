@@ -365,6 +365,12 @@ class TableOne:
         if self._categorical and self._include_null:
             data[self._categorical] = handle_categorical_nulls(data[self._categorical], self._categorical, null_value=self._null_value)
 
+        if self._categorical and self._include_null and self._null_value:
+            for col in self._categorical:
+                if col in data.columns and pd.api.types.is_categorical_dtype(data[col]):
+                    cats = [cat for cat in data[col].cat.categories if cat != self._null_value] + [self._null_value]
+                    data[col] = data[col].cat.reorder_categories(cats, ordered=True)
+
         self._groupbylvls = get_groups(data, self._groupby, self._order, self._reserved_columns)
 
         return data

@@ -221,11 +221,15 @@ class Tables:
 
         cat_slice = data[categorical].copy()
 
-        # Ensure all category levels from the full dataset are preserved
-        all_levels = {
-            col: sorted(set(cat_slice[col].dropna().astype(str)))
-            for col in categorical
-        }
+        # Use category order from dtype if available, else fallback to sorted unique values
+        def get_levels(col):
+            s = cat_slice[col]
+            if pd.api.types.is_categorical_dtype(s):
+                return list(s.cat.categories)
+            else:
+                return sorted(set(s.dropna().astype(str)))
+
+        all_levels = {col: get_levels(col) for col in categorical}
 
         # Build full multi-index with all combinations
         full_index = pd.MultiIndex.from_tuples(

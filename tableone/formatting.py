@@ -179,22 +179,51 @@ def apply_order(table, order, groupby):
     Applies a predefined order to rows based on specified requirements.
     May include reordering based on categorical group levels or other criteria.
     """
-    # if an order is specified, apply it
+    if groupby is None:
+        groupby = []    # if an order is specified, apply it
     if order:
         for k in order:
             # Skip if the variable isn't present
             try:
                 all_var = table.loc[k].index.unique(level='value')
+                
+                # Add missing categories with zero counts to show all ordered categories
+                all_categories = set(str(v) for v in all_var)
+                missing_categories = []
+                
+                for ordered_cat in order[k]:
+                    if str(ordered_cat) not in all_categories:
+                        missing_categories.append(ordered_cat)
+                        # Create a new row with zero counts for this category
+                        new_row_index = (k, str(ordered_cat))
+                        if new_row_index not in table.index:
+                            # Create a new row with appropriate zero values
+                            new_row_data = {}
+                            for col in table.columns:
+                                # For count/percentage columns, use "0 (0.0)" format
+                                if any(existing_val for existing_val in table.loc[k].values.flatten() 
+                                      if isinstance(existing_val, str) and '(' in str(existing_val) and ')' in str(existing_val)):
+                                    new_row_data[col] = "0 (0.0)"
+                                else:
+                                    new_row_data[col] = "0"
+                            
+                            # Create and add the new row
+                            new_row = pd.Series(new_row_data, name=new_row_index)
+                            table = pd.concat([table, new_row.to_frame().T])
+                
+                # Update all_var to include the newly added categories
+                all_var = table.loc[k].index.unique(level='value')
+                
             except KeyError:
                 if k not in groupby:  # type: ignore
                     warnings.warn(f"Order variable not found: {k}")
                 continue
 
-            # Remove value from order if it is not present
-            if [i for i in order[k] if i not in all_var]:
-                rm_var = [i for i in order[k] if i not in all_var]
-                order[k] = [i for i in order[k] if i in all_var]
-                warnings.warn(f'Order value not found: "{k}: {rm_var}"')
+            # Remove value from order if it is not present (this should now be minimal)
+            if [i for i in order[k] if str(i) not in [str(v) for v in all_var]]:
+                rm_var = [i for i in order[k] if str(i) not in [str(v) for v in all_var]]
+                order[k] = [i for i in order[k] if str(i) in [str(v) for v in all_var]]
+                warnings.warn(f'Order value not found: "{k}": {", ".join(map(str, rm_var))}')
 
             new_seq = [(k, '{}'.format(v)) for v in order[k]]
             new_seq += [(k, '{}'.format(v)) for v in all_var

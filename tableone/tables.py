@@ -521,8 +521,10 @@ class Tables:
                         print(f"[INFO] Index mismatch detected. Using merge instead of join for overall data.")
                         table_reset = table.reset_index()
                         overall_reset = overall_data.reset_index()
-                        merged = pd.merge(table_reset, overall_reset, on=['variable', 'value'], how='left')
-                        table = merged.set_index(['variable', 'value'])
+                        # Determine merge keys based on columns present
+                        merge_keys = ['variable', 'value'] if 'value' in table_reset.columns and 'value' in overall_reset.columns else ['variable']
+                        merged = pd.merge(table_reset, overall_reset, on=merge_keys, how='left')
+                        table = merged.set_index(merge_keys)
                 else:
                     print(f"[WARNING] 'Overall' column not found in cont_describe_all. Skipping overall join.")
             except Exception as e:

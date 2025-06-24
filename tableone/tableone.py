@@ -251,6 +251,7 @@ class TableOne:
                  ttest_equal_var: bool = False,
                  null_value: str = "None",
                  include_nulls_in_percent: bool = True,
+                 show_both_stats: bool = False,  # New parameter
                  ) -> None:
 
         # Check for duplicate index values before resetting index
@@ -269,6 +270,7 @@ class TableOne:
         self.tables = Tables()
 
         # Initialize attributes
+        self._show_both_stats = show_both_stats  # Store the new parameter
         data = self.initialize_core_attributes(data, columns, categorical, continuous, groupby,
                                                nonnormal, min_max, pval, pval_adjust, htest_name,
                                                htest, missing, ddof, rename, sort, limit, order,
@@ -361,6 +363,7 @@ class TableOne:
         self._sort = sort
         self._tukey_test = tukey_test
         self._warnings = {}
+        # self._show_both_stats = show_both_stats  # Store the new parameter
 
         if self._categorical and self._include_null:
             data[self._categorical] = handle_categorical_nulls(data[self._categorical], self._categorical, null_value=self._null_value)
@@ -577,35 +580,27 @@ class TableOne:
 
     def _t1_summary(self, x: pd.Series) -> str:
         """
-        Compute median [IQR] or mean (Std) for the input series.
-
-        Parameters
-        ----------
-            x : pandas Series
-                Series of values to be summarised.
+        Compute summary statistics for the input series.
+        If self._show_both_stats is True, always show mean (SD); median [Q1,Q3].
+        Otherwise, use the original logic.
         """
         # Enhanced type checking for pandas extension dtypes like Float64Dtype
         is_numeric = False
         try:
-            # First approach - check using numpy compatibility
             is_numeric = np.issubdtype(x.values.dtype, np.number)
         except TypeError:
-            # For pandas extension dtypes, check differently
             dtype_name = str(x.dtype).lower()
             if "float" in dtype_name or "int" in dtype_name:
-                # Convert to numpy array to ensure compatibility
                 x_values = x.to_numpy()
                 is_numeric = True
             else:
-                # Try to coerce to numeric as last resort
                 try:
                     x_values = pd.to_numeric(x, errors='coerce')
                     is_numeric = not x_values.isna().all()
                     if is_numeric:
-                        x = x_values  # Use converted series
+                        x = x_values
                 except:
                     is_numeric = False
-            
         if not is_numeric:
             return "N/A"
 
@@ -619,9 +614,22 @@ class TableOne:
                 n = 1
         else:
             n = 1
-            msg = """The decimals arg must be an int or dict.
-                     Defaulting to {} d.p.""".format(n)
+            msg = f"The decimals arg must be an int or dict. Defaulting to {n} d.p."
             warnings.warn(msg)
+
+        # New logic for show_both_stats
+        if getattr(self, '_show_both_stats', False):
+            mean = np.nanmean(x.values)
+            std = self.statistics._std(x, self._ddof)
+            median = np.nanmedian(x.values)
+            q1 = np.nanpercentile(x.values, 25)
+            q3 = np.nanpercentile(x.values, 75)
+            mean_sd_fmt = f'{{:.{n}f}} ({{:.{n}f}})'
+            median_iqr_fmt = f'{{:.{n}f}} [{{:.{n}f}}, {{:.{n}f}}]'
+            mean_sd = mean_sd_fmt.format(mean, std)
+            median_iqr = median_iqr_fmt.format(median, q1, q3)
+            # Adjusted formatting: mean (SD); median [Q1, Q3]
+            return f"{mean_sd}; {median_iqr}"
 
         if x.name in self._nonnormal:
             f = "{{:.{}f}} [{{:.{}f}},{{:.{}f}}]".format(n, n, n)
@@ -645,13 +653,7 @@ class TableOne:
                 )
             else:
                 f = '{{:.{}f}} ({{:.{}f}})'.format(n, n)
-                # Debugging output to verify decimals and formatted output
-                print(f"_t1_summary: column={x.name}, decimals={n}, formatted_output={f}")
-                # Debugging output to verify actual values being formatted
-                print(f"_t1_summary: mean={np.nanmean(x.values)}, std={self.statistics._std(x, self._ddof)}")
-                # Apply formatting to mean and standard deviation
                 formatted_output = f.format(np.nanmean(x.values), self.statistics._std(x, self._ddof))
-                print(f"_t1_summary: formatted_output={formatted_output}")  # Debugging output
                 return formatted_output
 
     def _combine_tables(self):
@@ -704,12 +706,14 @@ class TableOne:
         Applies alternative labels to the variables if required.
         """
         # display alternative labels if assigned
+        from .formatting import create_row_labels
         table = table.rename(index=create_row_labels(self._columns,
                                                      self._alt_labels,
                                                      self._label_suffix,
                                                      self._nonnormal,
                                                      self._min_max,
-                                                     self._categorical
+                                                     self._categorical,
+                                                     getattr(self, '_show_both_stats', False)
                                                      ), level=0)
 
         return table

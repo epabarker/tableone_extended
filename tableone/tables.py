@@ -525,8 +525,16 @@ class Tables:
                         merge_keys = ['variable', 'value'] if 'value' in table_reset.columns and 'value' in overall_reset.columns else ['variable']
                         merged = pd.merge(table_reset, overall_reset, on=merge_keys, how='left')
                         table = merged.set_index(merge_keys)
-                else:
-                    print(f"[WARNING] 'Overall' column not found in cont_describe_all. Skipping overall join.")
+
+                        # Ensure index is a MultiIndex with exactly ['variable', 'value'] as names
+                        if not isinstance(table.index, pd.MultiIndex) or table.index.nlevels != 2:
+                            # If only 'variable' is present, add a 'value' column of empty strings
+                            if 'value' not in table.columns:
+                                table['value'] = ''
+                            table = table.reset_index(drop=False)
+                            table = table.set_index(['variable', 'value'])
+                        # Always set index names to the expected
+                        table.index.set_names(['variable', 'value'], inplace=True)
             except Exception as e:
                 print(f"[WARNING] Error joining overall column for continuous data: {str(e)}. Skipping join.")
 
@@ -549,7 +557,7 @@ class Tables:
                     if col not in row:
                         row[col] = ''
                 missing_rows.append(row)
-                missing_idx.append((var, 'Missing'))
+                missing_idx.append((var, 'Not Reported'))  # Use 'Not Reported' as the value for missingness
             # Create missingness DataFrame (all strings)
             miss_df = pd.DataFrame(missing_rows,
                                    index=pd.MultiIndex.from_tuples(missing_idx, names=table.index.names),
